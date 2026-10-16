@@ -22,6 +22,7 @@ Every window has Level (1-4 / any) and Steps (2-5) filters. Each skill is listed
 3. In game: `/addon load chainfinder`  (add it to your default script to load it on startup).
 
 > Everything here is tested to the best of my ability, changes/fixes will be made as necessary.
+> Claude was used heavily in the creation of this addon.
 
 ## Commands
 
