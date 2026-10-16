@@ -1,5 +1,8 @@
 # ChainFinder
 
+<img width="850" height="618" alt="Arkine_2026 10 16_153055" src="https://github.com/user-attachments/assets/4493eba4-c90c-40ef-89cf-6d85021abcd9" />
+
+
 An Ashita v4 addon that shows **skillchains** while you are in the game's own menus.
 
 - **Self** (`/sc self`): hover a weapon skill and see every chain you can make with your own weapon skills (levels 1-4, 2-5 steps).
