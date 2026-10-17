@@ -2,6 +2,7 @@
 
 <img width="850" height="618" alt="Arkine_2026 10 16_153055" src="https://github.com/user-attachments/assets/4493eba4-c90c-40ef-89cf-6d85021abcd9" />
 
+<img width="939" height="577" alt="Screenshot 2026-10-17 035626" src="https://github.com/user-attachments/assets/c0991e43-188a-421d-b432-13fea28aec90" />
 
 An Ashita v4 addon that shows **skillchains** while you are in the game's own menus.
 
