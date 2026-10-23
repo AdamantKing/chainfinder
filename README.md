@@ -43,3 +43,13 @@ Every window has Level (1-4 / any) and Steps (2-5) filters. Each skill is listed
 - Look and feel inspired by YunaGearOpt.
 
 Copyright (C) 2026 Adamantking
+
+## 2.0.0 additions
+- **Mini mode** - the `-` button in the window's top-right corner shrinks the window to only the chain list for the current selection; the `+` button in the corner brings everything back.
+- **Window scale** - 25-150% font size slider at the bottom right (text only; the window is not resized).
+- **Automaton skills** - for a Puppetmaster, the automaton's weapon skills are used as pet moves. Pick the frame with the Frame buttons in the Pet Chains window or `/sc frame <name>`. `/sc pets` opens the Pet Chains window without the Ready menu.
+- **WS First** (Blue Chains) - only chains that start with a weapon skill and end with the spell.
+
+Not tested in game; automaton skillchain properties come from wiki pages.
+
+- **Aurora skin** - `aurora.lua` restyles ChainFinder only (other addons keep theme.lua). Delete the `require('aurora')(theme)` line in chainfinder.lua for the old gold look.

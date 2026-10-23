@@ -1,6 +1,6 @@
 addon.name    = 'chainfinder'
-addon.author  = 'Adamantking'
-addon.version = '1.9.1'
+addon.author  = 'you'
+addon.version = '2.0.0'
 addon.desc    = 'ChainFinder: skillchains for your skill under the menu cursor, Party/Find weapon chains, and Blue Mage chains/bursts.'
 addon.link    = ''
 
@@ -11,6 +11,7 @@ local ffi    = require('ffi')
 local wsdata = require('wsdata')
 local petdata = require('petdata')
 local theme   = require('theme')
+require('aurora')(theme)            -- Aurora skin (delete this line for the classic gold look)
 
 ----------------------------------------------------------------------
 -- Tunables
@@ -58,7 +59,7 @@ local type_short = {
 }
 
 local COL_HEAD = theme.C.gold
-local COL_ME   = theme.C.gold
+local COL_ME   = theme.C.amber or theme.C.gold
 local COL_TXT  = theme.C.text
 local COL_DIM  = theme.C.muted
 local COL_WARN = theme.C.warn
@@ -120,12 +121,15 @@ local cfg = {
     -- pet command > Ready sub menu profile
     ready = { menu = '', cur_obj = '', cur_off = -1, cur_base = 0, cnt_obj = '', cnt_off = -1, order = 'listed' },
     pet   = '',
+    frame = 'harlequin',          -- Puppetmaster automaton frame (the game does not tell us)
     direct = true,     -- read the highlighted ability straight from the game (like XIUI); no /sc setup needed
     nm_obj = '', nm_off = -1, nm_ptr = false,     -- where the game keeps the highlighted entry's text (/sc scan)
     fp = {}, cap_bad = {}, cap_good = {},     -- fingerprint that tells the weapon skill list from the Abilities menu
-    find  = { types = {}, levels = {}, steps = 2, all = true, blu = false, pet = false, petsel = '' },
+    find  = { types = {}, levels = {}, steps = 2, all = true, blu = false, pet = false, auto = false, petsel = '' },
     party = { types = {}, levels = {}, steps = 2, show_all = false, pos = 'any' },
-    self  = { levels = {}, steps = 2, show_all = false, blu = false, pet = false, burst = false, petws = false },
+    self  = { levels = {}, steps = 2, show_all = false, blu = false, pet = false, burst = false, petws = false, wsfirst = false, auto = false },
+    scale = 100,                 -- window scale in percent (25-150)
+    mini  = { self = false, find = false, party = false, blu = false },   -- chain-creation controls minimized
     blu   = { levels = {}, steps = 2 },
 }
 
@@ -179,6 +183,7 @@ local function load_cfg()
         if type(t.cnt_obj) == 'string' then cfg.cnt_obj = t.cnt_obj end
         if type(t.cnt_off) == 'number' then cfg.cnt_off = t.cnt_off end
         if type(t.pet) == 'string' then cfg.pet = t.pet end
+        if type(t.frame) == 'string' and petdata.frame_by_key[t.frame] then cfg.frame = t.frame end
         if type(t.direct) == 'boolean' then cfg.direct = t.direct end
         if type(t.nm_obj) == 'string' then cfg.nm_obj = t.nm_obj end
         if type(t.nm_off) == 'number' then cfg.nm_off = t.nm_off end
@@ -226,6 +231,7 @@ local function load_cfg()
             if type(p.all) == 'boolean' then cfg.find.all = p.all end
             if type(p.blu) == 'boolean' then cfg.find.blu = p.blu end
             if type(p.pet) == 'boolean' then cfg.find.pet = p.pet end
+            if type(p.auto) == 'boolean' then cfg.find.auto = p.auto end
             if type(p.petsel) == 'string' then cfg.find.petsel = p.petsel end
         end
         if type(t.find) == 'table' and type(t.party) == 'table' then
@@ -249,8 +255,16 @@ local function load_cfg()
             if type(t.self.show_all) == 'boolean' then cfg.self.show_all = t.self.show_all end
             if type(t.self.blu) == 'boolean' then cfg.self.blu = t.self.blu end
             if type(t.self.pet) == 'boolean' then cfg.self.pet = t.self.pet end
+            if type(t.self.auto) == 'boolean' then cfg.self.auto = t.self.auto end
             if type(t.self.burst) == 'boolean' then cfg.self.burst = t.self.burst end
             if type(t.self.petws) == 'boolean' then cfg.self.petws = t.self.petws end
+            if type(t.self.wsfirst) == 'boolean' then cfg.self.wsfirst = t.self.wsfirst end
+        end
+        if type(t.scale) == 'number' then cfg.scale = math.max(25, math.min(150, math.floor(t.scale + 0.5))) end
+        if type(t.mini) == 'table' then
+            for _, k in ipairs({ 'self', 'find', 'party', 'blu' }) do
+                if type(t.mini[k]) == 'boolean' then cfg.mini[k] = t.mini[k] end
+            end
         end
         if type(t.blu) == 'table' then
             cfg.blu.levels = clean_levels(t.blu.levels)
@@ -796,9 +810,10 @@ end
 
 -- base pool + the optional BLU spell / pet move classes toggled in the Self and Find windows
 local function with_extras(base, o, petpool)
-    if not (o.blu or o.pet) then return base end
+    if not (o.blu or o.pet or o.auto) then return base end
     local t = {}
     for _, c in ipairs(base) do t[#t + 1] = c end
+    if o.auto then for _, c in ipairs(pick_pool(petdata.norm(petdata.frame_pet(cfg.frame)))) do t[#t + 1] = c end end
     if o.blu then for _, c in ipairs(ctx_blu.pool) do t[#t + 1] = c end end
     if o.pet then for _, c in ipairs(petpool or ctx_rself.pool) do t[#t + 1] = c end end
     return t
@@ -806,7 +821,9 @@ end
 
 local function params(ctx)
     if ctx.kind == 'bweap' then
-        return { steps = cfg.self.steps, levels = lv_set(cfg.self.levels), pos = 'any', pool = ctx.pool }
+        -- exactly one step is the spell; the rest are weapon skills. "WS First" pins the spell to the LAST step,
+        -- so the chain starts with a weapon skill and ends with the spell.
+        return { steps = cfg.self.steps, levels = lv_set(cfg.self.levels), pos = cfg.self.wsfirst and 'last' or 'any', pool = ctx.pool }
     end
     if ctx.kind == 'rself' then
         return { steps = cfg.self.steps, levels = lv_set(cfg.self.levels), pos = 'any', pool = ctx.pool }
@@ -818,13 +835,13 @@ local function params(ctx)
         end
         return { steps = cfg.self.steps, levels = lv_set(cfg.self.levels), pos = 'any', pool = t, need_weap = true }
     elseif ctx.kind == 'self' or ctx.kind == 'rweap' then
-        return { steps = cfg.self.steps, levels = lv_set(cfg.self.levels), pos = 'any', pool = with_extras(ctx.pool, cfg.self), need_extra = (cfg.self.blu or cfg.self.pet) }
+        return { steps = cfg.self.steps, levels = lv_set(cfg.self.levels), pos = 'any', pool = with_extras(ctx.pool, cfg.self), need_extra = (cfg.self.blu or cfg.self.pet or cfg.self.auto) }
     elseif ctx.kind == 'party' then
         return { steps = cfg.party.steps, levels = lv_set(cfg.party.levels), pos = cfg.party.pos, pool = ctx.pool }
     elseif ctx.kind == 'blu' then
         return { steps = cfg.blu.steps, levels = lv_set(cfg.blu.levels), pool = ctx.pool, tag = true }
     end
-    local g = { steps = cfg.find.steps, levels = lv_set(cfg.find.levels), pool = with_extras(ctx.pool, cfg.find, (cfg.find.petsel ~= '') and pick_pool(cfg.find.petsel) or nil), need_extra = (cfg.find.blu or cfg.find.pet) }
+    local g = { steps = cfg.find.steps, levels = lv_set(cfg.find.levels), pool = with_extras(ctx.pool, cfg.find, (cfg.find.petsel ~= '') and pick_pool(cfg.find.petsel) or nil), need_extra = (cfg.find.blu or cfg.find.pet or cfg.find.auto) }
     local nt = #cfg.find.types
     if cfg.find.all and nt >= 1 and nt <= cfg.find.steps then g.cover = cfg.find.types end
     return g
@@ -1010,6 +1027,16 @@ local function ammo_item_name()
     return nil
 end
 
+local PUP_JOB, BST_JOB = 18, 9
+local function player_is_pup()
+    local ok, r = pcall(function()
+        local p = AshitaCore:GetMemoryManager():GetPlayer()
+        local m, sj = p:GetMainJob(), p:GetSubJob()
+        return m == PUP_JOB or (sj == PUP_JOB and m ~= BST_JOB)
+    end)
+    return ok and r == true
+end
+
 local function find_pet_entry(pname)
     local pk = petdata.norm(pname or '')
     if pk == '' then return nil end
@@ -1035,6 +1062,9 @@ local function pet_name()
     end)
     local summoned = (ok and type(name) == 'string' and name ~= '') and name or nil
     if summoned and find_pet_entry(summoned) then return summoned, 'summoned' end
+    -- A pet that is not a jug pet we know, while you are a Puppetmaster (main, or sub unless you are a BST main):
+    -- that is the automaton, and its skills come from the frame you chose.
+    if summoned and player_is_pup() then return petdata.frame_pet(cfg.frame), 'automaton' end
     local jug = ammo_item_name()
     local jp = jug and petdata.jug_pet(jug) or nil
     if jp then return jp, 'jug', jug end
@@ -1047,6 +1077,7 @@ local function refresh_ready(force)
     local sig = (pname or '') .. '|' .. cfg.ready.order
     if sig == ready.sig and not force then return end
     ready.sig, ready.pet, ready.src, ready.jug = sig, pname, psrc, pjug
+    ready.auto = (psrc == 'automaton') or (petdata.pets[petdata.norm(pname or '')] or {}).auto == true
     ready.moves, ready.by_key, ready.classes = {}, {}, {}
     ctx_rself.cache, ctx_party.cache, ctx_rweap.cache, ctx_self.cache, ctx_find.cache, ctx_bweap.cache = {}, {}, {}, {}, {}, {}
     ctx_rself.pool = {}
@@ -1055,6 +1086,7 @@ local function refresh_ready(force)
     local pet = find_pet_entry(pname)
     ready.known = pet ~= nil
     ready.label = pet and pet.name or (pname or '(no pet)')
+    if pet and pet.auto then ready.label = pet.name end
     if pet and psrc == 'jug' then ready.label = pet.name .. ' (from ' .. (pjug or 'jug') .. ')' end
     if not pet then return end
 
@@ -1209,6 +1241,17 @@ local function level_row(levels, idp, on_change)
     end
 end
 
+local frame_opts = {}
+for _, f in ipairs(petdata.frames) do frame_opts[#frame_opts + 1] = { text = f.name, value = f.key } end
+
+local function set_frame(v)
+    cfg.frame = v
+    save_cfg()
+    refresh_ready(true)
+    self_changed()
+    find_changed()
+end
+
 local steps_opts = {
     { text = '2', value = 2 }, { text = '3', value = 3 }, { text = '4', value = 4 }, { text = '5', value = 5 },
 }
@@ -1224,7 +1267,7 @@ local ELEMENT_COL = {
     Light = { 1.00, 0.97, 0.75, 1 }, Dark = { 0.70, 0.55, 0.90, 1 },
 }
 local COL_LEARNED = theme.C.green
-local COL_SET     = theme.C.gold
+local COL_SET     = theme.C.amber or theme.C.gold
 
 local blu_name_id = nil          -- spell name (lower) -> spell id, built once from the game's spell list
 local function blu_ids()
@@ -1312,11 +1355,19 @@ local function burst_list(el)
     return items
 end
 
-local function draw_burst_lines(res, now)
+local function draw_burst_lines(res, now, learned_only)
     for _, el in ipairs(wsdata.elements[res] or {}) do
         local items = burst_list(el)
         imgui.TextColored(ELEMENT_COL[el] or COL_DIM, '      BURST ' .. el:upper())
         refresh_burst_state(now)
+        if learned_only then
+            -- only spells you have learned (equipped ones are learned too)
+            local keep = {}
+            for _, it in ipairs(items) do
+                if burst_state[it.name] then keep[#keep + 1] = it end
+            end
+            items = keep
+        end
         local indent, avail = 36, imgui.GetWindowWidth() - 30
         local x = indent
         for i, it in ipairs(items) do
@@ -1341,7 +1392,7 @@ local function draw_burst_lines(res, now)
             end
             x = x + w
         end
-        if #items == 0 then imgui.TextColored(COL_DIM, '      (no blue magic for this element)') end
+        if #items == 0 then imgui.TextColored(COL_DIM, learned_only and '      (none learned)' or '      (no blue magic for this element)') end
     end
 end
 
@@ -1404,6 +1455,7 @@ local function draw_results(ctx, key, idp, empty_msg, height, burst)
 
     if #e.results > 0 and not empty_msg then
         imgui.BeginChild('cf_list_' .. idp, { 0, height or 0 }, true)
+        theme.child_scale()
         for _, r in ipairs(e.results) do
             draw_line(r)
             if burst and r.res then draw_burst_lines(r.res, os.clock()) end
@@ -1442,7 +1494,7 @@ end
 ----------------------------------------------------------------------
 -- Menu-driven state
 ----------------------------------------------------------------------
-local pinned    = { self = false, party = false, find = false, blu = false, settings = false }
+local pinned    = { pet = false, self = false, party = false, find = false, blu = false, settings = false }
 local self_auto  = true     -- Self opens by itself in the menus; closing it turns this off until /sc self
 local warned_same = false
 local open_flag = { self = { true }, party = { true }, find = { true }, blu = { true }, settings = { true } }
@@ -1604,28 +1656,181 @@ end
 ----------------------------------------------------------------------
 -- Windows
 ----------------------------------------------------------------------
+-- Mini mode: the chain-creation controls (levels / steps / toggles) can be hidden; the summary stays on one line.
+local function lv_text(levels)
+    if #levels == 0 then return 'Any' end
+    local t = {}
+    for i, v in ipairs(levels) do t[i] = tostring(v) end
+    table.sort(t)
+    return table.concat(t, ',')
+end
+
+-- Mini mode: the header's "-" button hides the chain-creation controls, shrinks the window to a compact size and
+-- the same corner button ("+") brings it all back at its old size.
+local MINI_SIZE = { self = { 440, 250 }, find = { 440, 260 }, party = { 440, 250 }, blu = { 440, 260 } }
+local FULL_SIZE = { self = { 560, 320 }, find = { 600, 460 }, party = { 620, 420 }, blu = { 640, 560 } }
+local mini_full, mini_req, mini_seen, cur_size = {}, {}, {}, {}
+
+local function win_size()
+    local ok, a, b = pcall(imgui.GetWindowSize)
+    if not ok then return nil end
+    if type(a) == 'table' then return { a.x or a[1], a.y or a[2] } end
+    if type(a) == 'number' and type(b) == 'number' then return { a, b } end
+    return nil
+end
+
+-- call BEFORE theme.begin: applies a pending compact / restore size (and compacts a window saved as minimized)
+local function mini_apply(wk)
+    if not mini_seen[wk] then
+        mini_seen[wk] = true
+        if cfg.mini[wk] then mini_req[wk] = { MINI_SIZE[wk][1], MINI_SIZE[wk][2] } end
+    end
+    local r = mini_req[wk]
+    if r then
+        mini_req[wk] = nil
+        imgui.SetNextWindowSize({ r[1], r[2] }, ImGuiCond_Always)
+    end
+end
+
+-- call right after theme.begin (before theme.header)
+local function mini_measure(wk) cur_size[wk] = win_size() end
+
+local function mini_click(wk)
+    local m = not cfg.mini[wk]
+    cfg.mini[wk] = m
+    if m then
+        mini_full[wk] = cur_size[wk] or { FULL_SIZE[wk][1], FULL_SIZE[wk][2] }
+        mini_req[wk] = { MINI_SIZE[wk][1], MINI_SIZE[wk][2] }
+    else
+        mini_req[wk] = mini_full[wk] or { FULL_SIZE[wk][1], FULL_SIZE[wk][2] }
+    end
+    save_cfg()
+end
+
+-- shows the controls summary while minimized; returns true when the controls should be drawn
+local function mini_bar(wk, summary)
+    if cfg.mini[wk] then
+        if summary then imgui.TextColored(COL_DIM, summary) end
+        return false
+    end
+    return true
+end
+
+-- mini mode: nothing but the chain list for the current selection
+local function mini_list(ctx, key, idp, burst, msg, learned_only)
+    local e = get_entry(ctx, key)
+    step_entry(e)
+    local list = e.results
+    if learned_only then
+        -- BLU: only chains whose blue spells you have learned (equipped ones count, they are learned too)
+        list = {}
+        for _, r in ipairs(e.results) do
+            local ok = true
+            for _, sg in ipairs(r.segs) do
+                if sg.blu and not blu_state(sg.blu) then ok = false break end
+            end
+            if ok then list[#list + 1] = r end
+        end
+    end
+    if msg then
+        imgui.TextColored(COL_DIM, msg)
+    elseif e.status == 'error' then
+        imgui.TextColored(COL_WARN, 'Error: ' .. tostring(e.err))
+    elseif #list == 0 then
+        imgui.TextColored(COL_DIM, e.status == 'running' and 'searching...' or
+            (learned_only and '(no skillchains with learned or equipped spells)' or '(no skillchains found)'))
+    else
+        imgui.BeginChild('cf_mini_' .. idp, { 0, 0 }, false)
+        theme.child_scale()
+        for _, r in ipairs(list) do
+            draw_line(r)
+            if (burst or learned_only) and r.res then draw_burst_lines(r.res, os.clock(), learned_only) end
+        end
+        imgui.EndChild()
+    end
+end
+
+-- Font scale 25-150% at the bottom right of every ChainFinder window. Applied live while you drag; saved on release.
+local scale_pending = nil
+local function frame_h() return 28 end      -- fixed: the scale control never changes size
+
+local function res_h()
+    return -(frame_h() + 12)       -- leave room for the footer under the results list
+end
+
+local function scale_footer(idp)
+    imgui.SetWindowFontScale(1.0)               -- the scale control itself is always drawn at 100%
+    local fh = frame_h()
+    local y = imgui.GetWindowHeight() - fh - 8
+    if imgui.GetCursorPosY() < y then imgui.SetCursorPosY(y) end
+    local sw = 130
+    local total = theme.text_w('Scale') + sw + theme.btn_w('100%') + 3 * 8
+    local x = imgui.GetWindowWidth() - total - 20
+    if x > imgui.GetCursorPosX() then imgui.SetCursorPosX(x) end
+    imgui.TextColored(COL_DIM, 'Scale')
+    imgui.SameLine()
+    imgui.SetNextItemWidth(sw)
+    local v = { cfg.scale }
+    if imgui.SliderInt('##cf_scale' .. idp, v, 25, 150, '%d%%') then
+        -- live: the text rescales every frame while you drag
+        cfg.scale = math.max(25, math.min(150, v[1]))
+        theme.set_scale(cfg.scale / 100)
+        scale_pending = true
+    end
+    if scale_pending and not imgui.IsItemActive() then
+        scale_pending = nil
+        save_cfg()                       -- written once, when you let go
+    end
+    imgui.SameLine()
+    if theme.ghost('100%##cf_s100' .. idp) then
+        scale_pending = nil
+        cfg.scale = 100
+        theme.set_scale(1.0)
+        save_cfg()
+    end
+    imgui.SetWindowFontScale(theme.ui_scale)
+end
+
 local function draw_self_window(hovered, menu_open, key, idx, wmode)
     local isready = (wmode == 'ready')
     local isblu = (wmode == 'blu')
     imgui.SetNextWindowPos({ 100, 300 }, ImGuiCond_FirstUseEver)
     imgui.SetNextWindowSize({ 560, 320 }, ImGuiCond_FirstUseEver)
     open_flag.self[1] = true
+    mini_apply('self')
     if theme.begin(isblu and 'ChainFinder - Blue Chains' or (isready and 'ChainFinder - Pet Chains' or 'ChainFinder - Self'), open_flag.self) then
-        if isblu then
-            theme.header(open_flag.self, 'BLUE', 'CHAINS', 'Chain Affinity spell + your weapon skills')
+        mini_measure('self')
+        if cfg.mini.self then
+            if theme.mini_corner() then mini_click('self') end
+            mini_list(isblu and ctx_bweap or (isready and (cfg.self.petws and ctx_pweap or ctx_rself) or ctx_self), key, 'self', isblu and cfg.self.burst,
+                (hovered and #hovered.props == 0) and (hovered.name .. ' has no skillchain property.') or nil, isblu)
         else
-            theme.header(open_flag.self, isready and 'PET' or 'SELF', 'CHAINS', isready and (ready.label .. ' Ready moves') or 'Your weapon skills')
-        end
-        draw_skill_header(hovered, menu_open, idx, wmode)
+        local mh
         if isblu then
-            imgui.TextColored(COL_DIM, ('Chains made with the spell under the cursor (Chain Affinity) and %s %s skills.'):format(
-                cfg.self.show_all and 'all' or 'your learned', skill_names[mine.skill or 0] or 'weapon'))
+            mh = theme.header(open_flag.self, 'BLUE', 'CHAINS', 'Chain Affinity spell + your weapon skills', cfg.mini.self)
+        else
+            mh = theme.header(open_flag.self, isready and 'PET' or 'SELF', 'CHAINS', isready and (ready.label .. (ready.auto and ' skills' or ' Ready moves')) or 'Your weapon skills', cfg.mini.self)
+        end
+        if mh then mini_click('self') end
+        draw_skill_header(hovered, menu_open, idx, wmode)
+        local sum = ('Level: %s   Steps: %d'):format(lv_text(cfg.self.levels), cfg.self.steps)
+        if isblu and cfg.self.wsfirst then sum = sum .. '   WS First' end
+        if cfg.self.show_all then sum = sum .. '   all WS' end
+        if mini_bar('self', sum) then
+        if isblu then
+            imgui.TextColored(COL_DIM, ('Chains made with the spell under the cursor (Chain Affinity) and %s %s skills%s.'):format(
+                cfg.self.show_all and 'all' or 'your learned', skill_names[mine.skill or 0] or 'weapon',
+                cfg.self.wsfirst and ' - weapon skill first, spell last' or ''))
         elseif isready then
             if cfg.self.petws then
                 imgui.TextColored(COL_DIM, ('Chains between the Ready move under the cursor (%s), other Ready moves and %s %s skills (at least one weapon skill).'):format(
                     ready.label, cfg.self.show_all and 'all' or 'your learned', skill_names[mine.skill or 0] or 'weapon'))
             else
                 imgui.TextColored(COL_DIM, ('Chains between the Ready move under the cursor and other %s Ready moves.'):format(ready.label))
+            end
+            if ready.auto then
+                button_row('Frame:', frame_opts, cfg.frame, 'sFr', set_frame)
+                imgui.TextColored(COL_DIM, "Automaton skills depend on the frame, and the game doesn't tell me yours - pick it above.")
             end
             if not ready.known then
                 imgui.TextColored(COL_WARN, "Pet isn't in petdata.lua - add it there, or name it with /sc pet <name>.")
@@ -1664,6 +1869,11 @@ local function draw_self_window(hovered, menu_open, key, idx, wmode)
         -- extra step sources: lets you see whether spells / your pet can chain with your weapon skills
         if isblu then
             imgui.SameLine()
+            if btn('WS First' .. (cfg.self.wsfirst and '  [on]' or ''), 'sWsf', cfg.self.wsfirst) then
+                cfg.self.wsfirst = not cfg.self.wsfirst
+                self_changed()
+            end
+            imgui.SameLine()
             if btn('BURST' .. (cfg.self.burst and '  [on]' or ''), 'sBurst', cfg.self.burst) then
                 cfg.self.burst = not cfg.self.burst
                 save_cfg()
@@ -1692,10 +1902,20 @@ local function draw_self_window(hovered, menu_open, key, idx, wmode)
                 cfg.self.pet = not cfg.self.pet
                 self_changed()
             end
+            imgui.SameLine()
+            if btn('Automaton' .. (cfg.self.auto and '  [on]' or ''), 'sAuto', cfg.self.auto) then
+                cfg.self.auto = not cfg.self.auto
+                self_changed()
+            end
+            if cfg.self.auto then
+                button_row('Frame:', frame_opts, cfg.frame, 'sAF', set_frame)
+            end
             if cfg.self.pet and #ctx_rself.pool == 0 then
                 imgui.TextColored(COL_WARN, 'No pet moves known - call your pet out (or /sc pet <name>).')
             end
         end
+
+        end   -- controls (mini mode)
 
         imgui.Separator()
         local msg = nil
@@ -1710,12 +1930,15 @@ local function draw_self_window(hovered, menu_open, key, idx, wmode)
         if isblu and hovered and #hovered.props == 0 then
             draw_magic_spell_info(hovered)
         else
-            draw_results(isblu and ctx_bweap or (isready and (cfg.self.petws and ctx_pweap or ctx_rself) or ctx_self), key, 'self', msg, nil, isblu and cfg.self.burst)
+            draw_results(isblu and ctx_bweap or (isready and (cfg.self.petws and ctx_pweap or ctx_rself) or ctx_self), key, 'self', msg, res_h(), isblu and cfg.self.burst)
         end
+        scale_footer('s')
+        end   -- not mini
     end
     theme.finish()
     if not open_flag.self[1] then
         pinned.self = false
+        pinned.pet = false
         self_auto = false          -- stays closed until /sc self
     end
 end
@@ -1724,9 +1947,17 @@ local function draw_find_window()
     imgui.SetNextWindowPos({ 680, 300 }, ImGuiCond_FirstUseEver)
     imgui.SetNextWindowSize({ 600, 460 }, ImGuiCond_FirstUseEver)
     open_flag.find[1] = true
+    mini_apply('find')
     if theme.begin('ChainFinder - Find', open_flag.find) then
-        theme.header(open_flag.find, 'FIND', 'CHAINS', 'Chains between the weapon types you pick')
+        mini_measure('find')
+        if cfg.mini.find then
+            if theme.mini_corner() then mini_click('find') end
+            mini_list(ctx_find, 'x', 'find')
+        else
+        if theme.header(open_flag.find, 'FIND', 'CHAINS', 'Chains between the weapon types you pick', cfg.mini.find) then mini_click('find') end
         local nt = #cfg.find.types
+        local fsum = ('Types: %d   Level: %s   Steps: %d'):format(nt, lv_text(cfg.find.levels), cfg.find.steps)
+        if mini_bar('find', fsum) then
         imgui.TextColored(COL_DIM, ('Weapon types (%d/%d) - chains use only the selected types:'):format(nt, MAX_TYPES))
         for i, id in ipairs(type_order) do
             if (i - 1) % 5 ~= 0 then imgui.SameLine() end
@@ -1746,6 +1977,14 @@ local function draw_find_window()
             cfg.find.pet = not cfg.find.pet
             find_changed()
         end
+        imgui.SameLine()
+        if btn('Automaton' .. (cfg.find.auto and '  [on]' or ''), 'fAuto', cfg.find.auto) then
+            cfg.find.auto = not cfg.find.auto
+            find_changed()
+        end
+        if cfg.find.auto then
+            button_row('Frame:', frame_opts, cfg.frame, 'fAF', set_frame)
+        end
         -- pet drop-down: any pet in petdata, or Auto (the pet that is out / the jug in your ammo slot)
         imgui.TextColored(COL_DIM, 'Pet:')
         imgui.SameLine()
@@ -1753,6 +1992,7 @@ local function draw_find_window()
         local preview = selp and selp.name or ('Auto (' .. (ready.label or '(no pet)') .. ')')
         imgui.SetNextItemWidth(260)
         if imgui.BeginCombo('##fpetsel', preview) then
+            theme.child_scale()
             if imgui.Selectable('Auto (summoned pet / jug in ammo slot)', cfg.find.petsel == '') then
                 cfg.find.petsel = ''
                 find_changed()
@@ -1785,11 +2025,14 @@ local function draw_find_window()
         if cfg.find.all and nt > cfg.find.steps then
             imgui.TextColored(COL_DIM, '(more types than steps: showing any combination)')
         end
+        end   -- controls (mini mode)
 
         imgui.Separator()
         local msg = nil
-        if nt == 0 and not (cfg.find.blu or cfg.find.pet) then msg = 'Pick at least one weapon type above (or turn on BLU spells / Pet moves).' end
-        draw_results(ctx_find, 'x', 'find', msg)
+        if nt == 0 and not (cfg.find.blu or cfg.find.pet or cfg.find.auto) then msg = 'Pick at least one weapon type above (or turn on BLU spells / Pet moves / Automaton).' end
+        draw_results(ctx_find, 'x', 'find', msg, res_h())
+        scale_footer('f')
+        end   -- not mini
     end
     theme.finish()
     if not open_flag.find[1] then
@@ -1808,9 +2051,17 @@ local function draw_party_window(hovered, menu_open, key, idx, wmode)
     imgui.SetNextWindowPos({ 100, 300 }, ImGuiCond_FirstUseEver)
     imgui.SetNextWindowSize({ 620, 420 }, ImGuiCond_FirstUseEver)
     open_flag.party[1] = true
+    mini_apply('party')
     if theme.begin('ChainFinder - Party', open_flag.party) then
-        theme.header(open_flag.party, 'PARTY', 'CHAINS', 'Your skill under the cursor + other weapons')
+        mini_measure('party')
+        if cfg.mini.party then
+            if theme.mini_corner() then mini_click('party') end
+            mini_list(ctx_party, key, 'party')
+        else
+        if theme.header(open_flag.party, 'PARTY', 'CHAINS', 'Your skill under the cursor + other weapons', cfg.mini.party) then mini_click('party') end
         draw_skill_header(hovered, menu_open, idx, wmode)
+        local psum = ('Weapons: %d   Level: %s   Steps: %d'):format(#cfg.party.types, lv_text(cfg.party.levels), cfg.party.steps)
+        if mini_bar('party', psum) then
         imgui.TextColored(COL_DIM, ('Chains between the %s under the cursor (%s) and the weapons below (%d/%d):'):format(
             isblu and 'blue magic spell' or (isready and 'Ready move' or 'skill'),
             isblu and 'Chain Affinity' or (isready and ready.label or ('your ' .. (skill_names[mine.skill or 0] or 'weapon'))),
@@ -1840,6 +2091,7 @@ local function draw_party_window(hovered, menu_open, key, idx, wmode)
             cfg.party.show_all = not cfg.party.show_all
             party_changed()
         end
+        end   -- controls (mini mode)
 
         imgui.Separator()
         local msg = nil
@@ -1852,7 +2104,9 @@ local function draw_party_window(hovered, menu_open, key, idx, wmode)
         elseif #cfg.party.types == 0 then
             msg = 'Toggle at least one weapon above. (Your own chains are in the Self window.)'
         end
-        draw_results(ctx_party, key, 'party', msg)
+        draw_results(ctx_party, key, 'party', msg, res_h())
+        scale_footer('p')
+        end   -- not mini
     end
     theme.finish()
     if not open_flag.party[1] then pinned.party = false end   -- closed: Self resumes
@@ -1862,23 +2116,32 @@ local function draw_blu_window()
     imgui.SetNextWindowPos({ 300, 120 }, ImGuiCond_FirstUseEver)
     imgui.SetNextWindowSize({ 640, 560 }, ImGuiCond_FirstUseEver)
     open_flag.blu[1] = true
+    mini_apply('blu')
     if theme.begin('ChainFinder - BLU chains', open_flag.blu) then
-        theme.header(open_flag.blu, 'BLU', 'CHAINS', 'Chain Affinity and Burst Affinity')
+        mini_measure('blu')
+        if cfg.mini.blu then
+            if theme.mini_corner() then mini_click('blu') end
+            mini_list(ctx_blu, 'x', 'blu', nil, nil, true)
+        else
+        if theme.header(open_flag.blu, 'BLU', 'CHAINS', 'Chain Affinity and Burst Affinity', cfg.mini.blu) then mini_click('blu') end
         imgui.TextColored(COL_HEAD, 'Chain Affinity: skillchains made only with physical blue magic')
         imgui.TextColored(COL_DIM, '(U) = needs Unbridled Learning. Grey text after a chain = elements it can be burst with.')
 
+        if mini_bar('blu', ('Level: %s   Steps: %d'):format(lv_text(cfg.blu.levels), cfg.blu.steps)) then
         level_row(cfg.blu.levels, 'bL', blu_changed)
         button_row('Steps:', steps_opts, cfg.blu.steps, 'bS', function(v)
             cfg.blu.steps = v
             blu_changed()
         end)
+        end   -- controls (mini mode)
 
         draw_results(ctx_blu, 'x', 'blu', nil, 210)
 
         imgui.Separator()
         imgui.TextColored(COL_HEAD, 'Burst Affinity: blue magic that can magic burst each skillchain')
         imgui.TextColored(COL_DIM, 'Use Burst Affinity, then cast a spell whose element matches the chain.')
-        imgui.BeginChild('cf_burst', { 0, 0 }, true)
+        imgui.BeginChild('cf_burst', { 0, res_h() }, true)
+        theme.child_scale()
         local want = lv_set(cfg.blu.levels)
         for i, row in ipairs(burst_rows) do
             if want == nil or want[row.lv] then
@@ -1891,6 +2154,8 @@ local function draw_blu_window()
             end
         end
         imgui.EndChild()
+        scale_footer('b')
+        end   -- not mini
     end
     theme.finish()
     if not open_flag.blu[1] then pinned.blu = false end
@@ -1967,6 +2232,11 @@ local function draw_settings_window()
             cfg.self.pet = not cfg.self.pet
             self_changed()
         end
+        imgui.SameLine()
+        if btn('Automaton' .. (cfg.self.auto and '  [on]' or ''), 'oSAuto', cfg.self.auto) then
+            cfg.self.auto = not cfg.self.auto
+            self_changed()
+        end
         imgui.TextColored(COL_DIM, 'Find also uses:')
         imgui.SameLine()
         if btn('BLU spells' .. (cfg.find.blu and '  [on]' or ''), 'oFBlu', cfg.find.blu) then
@@ -1976,6 +2246,11 @@ local function draw_settings_window()
         imgui.SameLine()
         if btn('Pet moves' .. (cfg.find.pet and '  [on]' or ''), 'oFPet', cfg.find.pet) then
             cfg.find.pet = not cfg.find.pet
+            find_changed()
+        end
+        imgui.SameLine()
+        if btn('Automaton' .. (cfg.find.auto and '  [on]' or ''), 'oFAuto', cfg.find.auto) then
+            cfg.find.auto = not cfg.find.auto
             find_changed()
         end
 
@@ -2074,6 +2349,7 @@ ashita.events.register('load', 'chainfinder_load', function()
     pGameMenu = ashita.memory.find('FFXiMain.dll', 0, '8B480C85C974??8B510885D274??3B05', 16, 0)
     sel_init()
     load_cfg()
+    theme.ui_scale = cfg.scale / 100
     rebuild_find_pool()
     rebuild_party_pool()
     refresh_ready(true)
@@ -2246,6 +2522,7 @@ ashita.events.register('d3d_present', 'chainfinder_present', function()
         mode = 'ready'
     end
     if direct then mode = dmode end
+    if not mode and pinned.pet and pinned.self and not pinned.party then mode = 'ready' end   -- /sc pets
     local menu_open = (mode ~= nil)
 
     local hovered, hidx
@@ -2383,6 +2660,7 @@ local function help()
     say('/sc include      then open the Weapon Skills list, cursor on the first skill, and run this')
     say('/sc setup ready  ONE-TIME for pets: with your pet out, open Pet Commands > Ready and do the same')
     say('/sc ready        show the pet and Ready moves I know   /sc ready order listed|alpha|id   /sc pet <name|auto>')
+    say('/sc pets         Pet Chains window without the Ready menu (Puppetmaster automaton)   /sc frame harlequin|valoredge|sharpshot|stormwaker')
     say('Find text commands: /sc types axe,sword (max 5) | types clear | level 1,3 or any | steps 2-5')
     say('                     /sc mix on|off (use every selected type) | /sc set <types> <levels> [steps]')
     say('Other: /sc learn  /sc calibrate  /sc debug  /sc menu [text]  /sc refresh')
@@ -2401,6 +2679,7 @@ local function cmd_sc(args)
         refresh_ready(true)
 
     elseif cmd == 'self' then
+        pinned.pet = false
         if pinned.party then
             pinned.party = false
             pinned.self = true
@@ -2419,6 +2698,16 @@ local function cmd_sc(args)
 
     elseif cmd == 'blu' then
         pinned.blu = not pinned.blu
+
+    elseif cmd == 'pets' or cmd == 'automaton' then
+        -- Pet Chains window without having to hover the Ready menu (e.g. for a Puppetmaster's automaton)
+        if pinned.pet and pinned.self then
+            pinned.pet, pinned.self = false, false
+        else
+            pinned.pet, pinned.self, pinned.party = true, true, false
+            self_auto = true
+        end
+        refresh_ready(true)
 
     elseif cmd == 'types' then
         if not args[3] then say('Usage: /sc types axe,sword   (or /sc types clear)') return end
@@ -2561,6 +2850,19 @@ local function cmd_sc(args)
             for i, m in ipairs(ready.moves) do
                 say(('  %d. %s  [%s]'):format(i, m.name, #m.props > 0 and table.concat(m.props, '/') or 'no property'))
             end
+        end
+
+    elseif cmd == 'frame' then
+        local k = args[3] and args[3]:lower() or ''
+        if petdata.frame_by_key[k] then
+            cfg.frame = k
+            save_cfg()
+            refresh_ready(true)
+            say(('Automaton frame set to %s.'):format(petdata.frame_by_key[k].name))
+        else
+            local names = {}
+            for _, f in ipairs(petdata.frames) do names[#names + 1] = f.key end
+            say(('Automaton frame = %s.  Usage: /sc frame %s'):format(cfg.frame, table.concat(names, '|')))
         end
 
     elseif cmd == 'pet' then

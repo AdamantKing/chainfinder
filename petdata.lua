@@ -49,6 +49,15 @@ local rows = {
     {764,"Swooping Frenzy","Fusion","Reverberation"}, {765,"Sweeping Gouge","Induration"},
     {767,"Pentapeck","Light","Distortion"}, {768,"Tickling Tendrils","Impaction"}, {772,"Somersault","Compression"},
     {776,"Pecking Flurry","Transfixion"}, {777,"Sickle Slash","Transfixion"}, {780,"Regal Gash","Distortion","Detonation"},
+    -- Puppetmaster automaton weapon skills (ids are made up - they only keep the 'id' ordering stable).
+    -- Properties: Gamer Escape / FFXIclopedia "Automaton Weapon Skills" (two sources that agree except Arcuballista / Daze,
+    -- where Gamer Escape also lists Transfixion; I used the FFXIclopedia single property). Not verified in game.
+    {3001,"Slapstick","Reverberation","Impaction"}, {3002,"Knockout","Scission","Detonation"},
+    {3003,"Magic Mortar","Liquefaction","Fusion"}, {3004,"Chimera Ripper","Detonation","Induration"},
+    {3005,"String Clipper","Scission"}, {3006,"Cannibal Blade","Compression","Reverberation"},
+    {3007,"Bone Crusher","Fragmentation"}, {3008,"String Shredder","Distortion","Scission"},
+    {3009,"Arcuballista","Liquefaction"}, {3010,"Daze","Impaction"}, {3011,"Armor Piercer","Gravitation"},
+    {3012,"Armor Shatterer","Fusion","Impaction"},
     {961,"Welt","Scission"}, {964,"Roundhouse","Detonation"}, {970,"Hysteric Assault","Fragmentation","Transfixion"},
 }
 
@@ -128,6 +137,25 @@ local pets = {
 M.pets = {}
 for _, p in ipairs(pets) do
     M.pets[norm(p[1])] = { name = p[1], moves = p[2] }
+end
+
+-- Puppetmaster automaton: the skills depend on the FRAME (the head does not change them). The automaton's own name is
+-- whatever the player typed, so ChainFinder cannot tell the frame from the name - pick it with the Frame buttons in
+-- the Pet window or /sc frame <name>.
+M.frames = {
+    { key = 'harlequin',  name = 'Harlequin',  moves = { 'Slapstick', 'Knockout', 'Magic Mortar' } },
+    { key = 'valoredge',  name = 'Valoredge',  moves = { 'Chimera Ripper', 'String Clipper', 'Cannibal Blade', 'Bone Crusher', 'String Shredder' } },
+    { key = 'sharpshot',  name = 'Sharpshot',  moves = { 'Arcuballista', 'Daze', 'Armor Piercer', 'Armor Shatterer' } },
+    { key = 'stormwaker', name = 'Stormwaker', moves = { 'Slapstick', 'Knockout', 'Magic Mortar' } },
+}
+M.frame_by_key = {}
+for _, f in ipairs(M.frames) do
+    M.frame_by_key[f.key] = f
+    M.pets[norm('Automaton ' .. f.name)] = { name = 'Automaton (' .. f.name .. ')', moves = f.moves, auto = true }
+end
+function M.frame_pet(key)
+    local f = M.frame_by_key[key] or M.frame_by_key.harlequin
+    return 'Automaton ' .. f.name
 end
 
 -- jug (ammo slot item) -> pet it summons. Names are matched word by word and tolerate the game's
